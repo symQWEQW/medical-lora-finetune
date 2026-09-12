@@ -39,3 +39,7 @@ data/*_real/
 *_real/
 data/cache/
 *.log
+
+# ---- 训练产物（只保留 results/ 下的评估结果作为证据）----
+outputs/
+!results/
