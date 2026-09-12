@@ -6,6 +6,8 @@
 ![LoRA](https://img.shields.io/badge/PEFT-LoRA%20%2F%20QLoRA-green)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
+> 📓 没 GPU 也想跑？[Colab 一键复现（训练+评估）](https://colab.research.google.com/github/symQWEQW/medical-lora-finetune/blob/master/colab_train_eval.ipynb)
+
 ---
 
 > **为什么做这个**：前面江陵项目是「基于现成大模型做应用」，本仓库补一个能说
