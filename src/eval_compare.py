@@ -19,7 +19,7 @@ from collections import Counter
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
-BASE = "Qwen/Qwen2.5-0.5B-Instruct"
+BASE = "models/Qwen2.5-0.5B-Instruct"
 LORA = "outputs/qwen2.5-lora-medical"
 
 
