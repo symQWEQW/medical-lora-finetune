@@ -14,13 +14,18 @@
 """
 import json
 import os
+import torch
 from collections import Counter
+
+# CPU 推理时 bf16 为软件模拟，极慢；无 GPU 一律用 float32
+torch.set_num_threads(min(8, os.cpu_count() or 4))
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
 BASE = "models/Qwen2.5-0.5B-Instruct"
 LORA = "outputs/qwen2.5-lora-medical"
+DTYPE = torch.float32 if not torch.cuda.is_available() else "auto"
 
 
 def _grams(s, n=2):
@@ -46,15 +51,32 @@ def load_model(base, lora=None):
     tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    m = AutoModelForCausalLM.from_pretrained(base, device_map="auto", torch_dtype="auto")
+    m = AutoModelForCausalLM.from_pretrained(
+        base, device_map="cpu" if not torch.cuda.is_available() else "auto", torch_dtype=DTYPE
+    )
     if lora:
         m = PeftModel.from_pretrained(m, lora)
     return tok, m
 
 
-def generate(tok, model, prompt, max_new=128):
+def build_prompt(tokenizer, user_text):
+    """与训练保持完全一致的 chat 模板，避免 train/eval 分布不一致。"""
+    msgs = [{"role": "user", "content": user_text}]
+    return tokenizer.apply_chat_template(
+        msgs, tokenize=False, add_generation_prompt=True
+    )
+
+
+def generate(tok, model, user_text, max_new=128):
+    prompt = build_prompt(tok, user_text)
     inputs = tok(prompt, return_tensors="pt").to(model.device)
-    out = model.generate(**inputs, max_new_tokens=max_new, do_sample=False)
+    out = model.generate(
+        **inputs,
+        max_new_tokens=max_new,
+        do_sample=False,
+        pad_token_id=tok.pad_token_id,
+        eos_token_id=tok.eos_token_id,  # 遇到 <|im_end|> 停止，避免无意义续写稀释 F1
+    )
     return tok.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
 
 
@@ -63,11 +85,15 @@ def main():
         print(f"[跳过] 未找到 LoRA 适配器：{LORA}\n请先运行：python src/train_lora.py")
         return
 
-    base_tok, base_m = load_model(BASE)
-    ft_tok, ft_m = load_model(BASE, LORA)
+    if not os.path.exists(LORA):
+        print(f"[跳过] 未找到 LoRA 适配器：{LORA}\n请先运行：python src/train_lora.py")
+        return
 
     with open("data/eval.json", encoding="utf-8") as f:
         tests = json.load(f)
+
+    base_tok, base_m = load_model(BASE)
+    ft_tok, ft_m = load_model(BASE, LORA)
 
     base_bi, ft_bi, base_uni, ft_uni = [], [], [], []
     for t in tests:
@@ -81,6 +107,9 @@ def main():
         base_uni.append(ub); ft_uni.append(uf)
         print(f"Q: {t['instruction']}")
         print(f"  Base  bigramF1={sb:.3f} uniF1={ub:.3f} | LoRA bigramF1={s:.3f} uniF1={uf:.3f}")
+        print(f"    GOLD: {gold}")
+        print(f"    BASE: {b.strip()[:120]}")
+        print(f"    LoRA: {f1.strip()[:120]}")
 
     n = len(tests)
     avg = lambda xs: sum(xs) / n

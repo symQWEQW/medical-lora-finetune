@@ -12,9 +12,10 @@ import os
 import torch
 from datasets import Dataset
 
-# CPU 极限压榨：用满本机 20 线程
-torch.set_num_threads(min(20, os.cpu_count() or 4))
-torch.set_num_interop_threads(2)
+# CPU 线程：取 min(8, 核数)，避免线程超订反而变慢
+_N_THREADS = min(8, os.cpu_count() or 4)
+torch.set_num_threads(_N_THREADS)
+print(f"[env] cpu_count={os.cpu_count()} -> torch threads={_N_THREADS}")
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -43,12 +44,31 @@ def load_dataset(path):
     return Dataset.from_list([fmt(r) for r in rows])
 
 
+def build_prompt(tokenizer, user_text):
+    """用 Qwen2.5-Instruct 官方 chat 模板包一层。
+
+    Instruct 模型必须用模板提问，否则分布不匹配、模型会乱答（实测裸 prompt
+    下 Base 模型 bigram-F1 只有 0.03 量级）。训练与评估必须用同一套模板。
+    """
+    msgs = [{"role": "user", "content": user_text}]
+    return tokenizer.apply_chat_template(
+        msgs, tokenize=False, add_generation_prompt=True
+    )
+
+
 def tokenize(example, tokenizer):
-    # prompt 部分 label 设为 -100（不计算损失），只训练 response
-    prompt_ids = tokenizer(example["prompt"], add_special_tokens=False)["input_ids"]
-    resp_ids = tokenizer(example["response"], add_special_tokens=False)["input_ids"]
-    input_ids = (prompt_ids + resp_ids)[:MAX_LEN]
-    labels = ([-100] * len(prompt_ids) + resp_ids)[:MAX_LEN]
+    """整体 tokenize + 只对 assistant 回答部分计算损失（prompt 掩码为 -100）。"""
+    user_text = example["prompt"]
+    resp = example["response"]
+
+    rendered_prompt = build_prompt(tokenizer, user_text)
+    full_text = rendered_prompt + resp + tokenizer.eos_token
+
+    prompt_ids = tokenizer(rendered_prompt, add_special_tokens=False)["input_ids"]
+    full_ids = tokenizer(full_text, add_special_tokens=False)["input_ids"]
+
+    input_ids = full_ids[:MAX_LEN]
+    labels = ([-100] * len(prompt_ids) + full_ids[len(prompt_ids):])[:MAX_LEN]
     attention_mask = [1] * len(input_ids)
     return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
@@ -59,17 +79,19 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"加载基座模型：{BASE_MODEL}（device_map='auto'，无 GPU 时落到 CPU）")
+    print(f"加载基座模型：{BASE_MODEL}（CPU / float32）")
+    # 注意：Qwen2.5 默认 torch_dtype=bfloat16，CPU 上 bf16 是软件模拟，慢 20~50 倍，
+    # 必须显式转 float32，否则单步耗时会从秒级劣化到分钟级。
     model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
-        torch_dtype="auto",
+        torch_dtype=torch.float32,
         device_map="cpu",
     )
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=8,
-        lora_alpha=16,
+        r=16,
+        lora_alpha=32,
         lora_dropout=0.05,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
     )
@@ -82,8 +104,10 @@ def main():
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=1,
-        num_train_epochs=1,
+        # 小样本（26 条）需要多轮才能学会领域话术，10 epoch 在 CPU 上约 2 分钟
+        num_train_epochs=10,
         learning_rate=3e-4,
+        lr_scheduler_type="cosine",
         fp16=False,
         bf16=False,
         dataloader_pin_memory=False,
