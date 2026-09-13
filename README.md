@@ -26,6 +26,9 @@
 | 字符级 unigram F1（参考） | 0.162 | 0.327 | +101.9% |
 | 训练 loss | 2.898（第 1 epoch） | 0.470（第 10 epoch） | — |
 
+
+![LoRA 微调前后 F1 对比](docs/images/lora-f1-compare.png)
+
 样例对比（同一道题）：
 
 | | 回答 |
