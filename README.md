@@ -29,6 +29,10 @@
 
 ![LoRA 微调前后 F1 对比](docs/images/lora-f1-compare.png)
 
+评测脚本真实运行输出（对应仓库内 `results/eval_result_cpu.txt`，本机 CPU 实跑）：
+
+![LoRA 评测真实运行输出](docs/images/lora-eval-run.png)
+
 样例对比（同一道题）：
 
 | | 回答 |
